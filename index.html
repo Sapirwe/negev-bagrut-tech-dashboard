@@ -717,7 +717,8 @@ if (typeof module !== "undefined") module.exports = CORE;
     bar.innerHTML = (focus.shown === 0
       ? "<b>לא נבחר אף בית ספר</b>, ולכן אין נתונים להצגה לרשות."
       : "מוצגים <b>" + focus.shown + " מתוך " + focus.total + "</b> בתי הספר של " + esc(unitName()) + ". הממוצעים של האשכול והארץ והמדרג בין הרשויות כוללים את כל בתי הספר.") +
-      ' <button type="button" class="btn" id="btnReset">החזירו את כל בתי הספר</button>';
+      ' <button type="button" class="btn" id="btnReset">החזירו את כל בתי הספר</button>' +
+      ' <button type="button" class="btn" id="btnCopy">העתיקו קישור לתצוגה הזו</button>';
   }
   function renderAll() {
     $("regularHint").hidden = !state.regular;
@@ -743,18 +744,32 @@ if (typeof module !== "undefined") module.exports = CORE;
     if (state.auth == null) return;
     var ids = Array.from(state.excluded);
     try { localStorage.setItem(storageKey(), ids.join(",")); } catch (e) { /* storage may be blocked */ }
+    // letters, digits and "_" only, so chat and mail apps recognize the whole thing as one link
     history.replaceState(null, "", location.pathname + location.search + "#" + D.authorities[state.auth].slug +
-      (ids.length ? "?x=" + ids.join(",") : ""));
+      (ids.length ? "_" + ids.join("_") : ""));
   }
   function readHash() {
-    var raw = decodeURIComponent(location.hash.replace(/^#/, "")).split("?");
-    state.auth = slugIndex(raw[0]);
+    var raw = decodeURIComponent(location.hash.replace(/^#/, ""));
+    var legacy = raw.split("?");                      // older links: #slug?x=1,2
+    var parts = legacy[0].split("_");                 // current links: #slug_1_2
+    state.auth = slugIndex(parts[0]);
     $("selAuth").value = state.auth == null ? "" : D.authorities[state.auth].slug;
     state.excluded = new Set();
     if (state.auth == null) return;
-    var m = /(?:^|&)x=([0-9,]*)/.exec(raw[1] || "");
+    var m = /(?:^|&)x=([0-9,]*)/.exec(legacy[1] || "");
     if (m) { state.excluded = parseIds(m[1]); return; }
+    if (parts.length > 1) { state.excluded = parseIds(parts.slice(1).join(",")); return; }
     try { state.excluded = parseIds(localStorage.getItem(storageKey())); } catch (e) { /* ignore */ }
+  }
+  function copyLink(btn) {
+    var url = location.href, done = function () {
+      var old = btn.textContent; btn.textContent = "הקישור הועתק";
+      setTimeout(function () { btn.textContent = old; }, 2000);
+    };
+    if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(url).then(done, function () { window.prompt("העתיקו את הקישור:", url); }); return; }
+    var ta = document.createElement("textarea"); ta.value = url; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch (e) { window.prompt("העתיקו את הקישור:", url); }
+    document.body.removeChild(ta);
   }
   function onSelectionChange() { saveSelection(); renderAll(); }
 
@@ -788,6 +803,7 @@ if (typeof module !== "undefined") module.exports = CORE;
     });
     $("focusBar").addEventListener("click", function (ev) {
       if (ev.target.id === "btnReset") { state.excluded = new Set(); onSelectionChange(); }
+      if (ev.target.id === "btnCopy") copyLink(ev.target);
     });
     // charts drawn while a section was closed need a resize when it opens
     document.querySelectorAll("details").forEach(function (d) {
