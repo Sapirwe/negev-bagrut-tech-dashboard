@@ -52,6 +52,16 @@ h2 { font-size: 1.15rem; margin: 0 0 2px; }
 .kpi.minor { background: transparent; border-style: dashed; padding: 8px 12px; }
 .kpi.minor .val { font-size: 1.25rem; }
 .btn { font: inherit; font-size: .9rem; background: #fff; border: 1px solid #c9cfc9; border-radius: 8px; padding: 6px 12px; margin-bottom: 10px; color: var(--auth); cursor: pointer; }
+.tools { display: inline; }
+.tools[hidden] { display: none; }
+.tools .btn { margin-left: 6px; }
+.focus { background: var(--soft); border: 1px solid var(--auth); border-radius: 12px; padding: 10px 14px; margin-bottom: 16px; font-size: .95rem; }
+.focus[hidden] { display: none; }
+.focus.warn { background: var(--warn); border-color: #e8c36a; color: var(--warn-ink); }
+.focus .btn { margin: 6px 0 0; }
+td.name .nm { display: flex; gap: 8px; align-items: flex-start; }
+td.name input.pick { width: 20px; height: 20px; margin-top: 3px; accent-color: var(--auth); flex: none; }
+tr.off td { opacity: .5; }
 table:not(.more) .x { display: none; }
 table:not(.more) { min-width: 0; }
 details.fold > summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
@@ -141,6 +151,7 @@ tr.group td { background: #eef3f2; font-weight: 700; text-align: right; position
 </header>
 
 <main class="wrap" id="app">
+  <div id="focusBar" class="focus" hidden></div>
   <section id="sKpi" class="card"><h2>במבט אחד</h2><p class="sub" id="kpiSub"></p><div class="kpis" id="kpis"></div></section>
 
   <section id="sPos" class="card">
@@ -174,6 +185,10 @@ tr.group td { background: #eef3f2; font-weight: 700; text-align: right; position
   <section id="sSchools" class="card">
     <h2>בתי הספר</h2>
     <p class="sub" id="schoolsSub"></p>
+    <div id="pickTools" class="tools" hidden>
+      <button type="button" id="btnAll" class="btn">סמנו את כל בתי הספר</button>
+      <button type="button" id="btnNone" class="btn">בטלו את כל הסימונים</button>
+    </div>
     <button type="button" id="btnMore" class="btn" aria-expanded="false">הצג עוד עמודות (מקצועות, סוג בית ספר, עשירון טיפוח)</button>
     <div class="tablewrap"><table id="tblSchools"></table></div>
   </section>
@@ -255,9 +270,11 @@ var CORE = (function () {
     return D.special.indexOf(typeIdx) < 0;
   }
 
+  // o.exclude: optional Set of school ids left out (manual selection by the viewer).
   function cluster(D, o) {
     return toObj(D, sumRows(D.cl, CL_OFF, D.fields.length, function (r) {
       return r[0] === o.year &&
+        (!o.exclude || !o.exclude.has(r[2])) &&
         (o.auth == null || r[1] === o.auth) &&
         (o.sid == null || r[2] === o.sid) &&
         (o.gender == null || r[3] === o.gender) &&
@@ -284,10 +301,11 @@ var CORE = (function () {
   }
 
   // Headline numbers: tech rate for an authority (auth index or null), the cluster and the nation.
-  function headline(D, auth, year, regularOnly) {
+  // `exclude` (optional Set of school ids) only affects the authority, never the cluster or the nation.
+  function headline(D, auth, year, regularOnly, exclude) {
     var base = { year: year, regularOnly: regularOnly };
     return {
-      authority: auth == null ? null : summary(cluster(D, { year: year, auth: auth, regularOnly: regularOnly })),
+      authority: auth == null ? null : summary(cluster(D, { year: year, auth: auth, regularOnly: regularOnly, exclude: exclude })),
       cluster: summary(cluster(D, base)),
       national: summary(national(D, base))
     };
@@ -306,7 +324,9 @@ if (typeof module !== "undefined") module.exports = CORE;
   var NA = '<span class="na" title="לא זמין לשנה זו">—</span>';
   var LATEST = D.years[D.years.length - 1];
   var FIRST = D.years[0];
-  var state = { auth: null, year: LATEST, regular: false };
+  // excluded: ids of schools the viewer unticked (applies to the selected authority only)
+  var state = { auth: null, year: LATEST, regular: false, excluded: new Set() };
+  var focus = { on: false, shown: 0, total: 0 };   // recomputed on every render
   var charts = {};
 
   Chart.defaults.font.family = '"Segoe UI","Arial Hebrew",Arial,sans-serif';
@@ -322,7 +342,8 @@ if (typeof module !== "undefined") module.exports = CORE;
 
   // ---------- data access (all numbers come from CORE) ----------
   function unitAgg(year, extra) {
-    var o = Object.assign({ year: year, auth: state.auth, regularOnly: state.regular }, extra || {});
+    var o = Object.assign({ year: year, auth: state.auth, regularOnly: state.regular,
+      exclude: state.auth == null ? null : state.excluded }, extra || {});
     return CORE.cluster(D, o);
   }
   function clusterAgg(year, extra) {
@@ -332,10 +353,12 @@ if (typeof module !== "undefined") module.exports = CORE;
     return CORE.national(D, Object.assign({ year: year, regularOnly: state.regular }, extra || {}));
   }
   function unitName() { return state.auth == null ? "כל האשכול" : D.authorities[state.auth].name; }
+  // name used in legends and cards: says so when only some of the schools are included
+  function unitLabel() { return unitName() + (focus.on ? " (בתי הספר שנבחרו)" : ""); }
   // the series shown in comparisons: the authority (if any), the cluster, the nation
   function series(aggFn) {
     var out = [];
-    if (state.auth != null) out.push({ key: "unit", label: unitName(), color: C.auth, dash: [], agg: aggFn("unit") });
+    if (state.auth != null) out.push({ key: "unit", label: unitLabel(), color: C.auth, dash: [], agg: aggFn("unit") });
     out.push({ key: "clus", label: "ממוצע האשכול", color: C.clus, dash: [7, 4], agg: aggFn("clus") });
     out.push({ key: "nat", label: "ממוצע ארצי", color: C.nat, dash: [2, 3], agg: aggFn("nat") });
     return out;
@@ -432,7 +455,12 @@ if (typeof module !== "undefined") module.exports = CORE;
     function card(cls, lab, val, cnt) {
       cards.push('<div class="kpi ' + cls + '"><div class="lab">' + lab + '</div><div class="val">' + val + '</div><div class="cnt">' + cnt + "</div></div>");
     }
-    if (state.auth != null) card("auth", "בגרות טק – " + esc(unitName()), pct(ru), u.tech == null ? "" : num(u.tech) + " מתוך " + num(u.students_12) + " לומדים");
+    if (state.auth != null) {
+      var full = CORE.cluster(D, { year: state.year, auth: state.auth, regularOnly: state.regular });
+      card("auth", "בגרות טק – " + esc(unitLabel()), pct(ru),
+        (u.tech == null ? "" : num(u.tech) + " מתוך " + num(u.students_12) + " לומדים") +
+        (focus.on ? "<br><b>כל בתי הספר ברשות: " + pctText(CORE.rate(full.tech, full.students_12)) + "</b>" : ""));
+    }
     card("clus", "ממוצע האשכול", pct(rc), c.tech == null ? "" : num(c.tech) + " מתוך " + num(c.students_12));
     card("nat", "ממוצע ארצי", pct(rn), n.tech == null ? "" : num(n.tech) + " מתוך " + num(n.students_12));
     card("minor", "תלמידים עם בגרות טק", num(u.tech), "ב" + esc(unitName()) + ", שנת " + state.year);
@@ -441,7 +469,7 @@ if (typeof module !== "undefined") module.exports = CORE;
     var sentence;
     if (ru == null && state.auth != null) sentence = "אין נתונים לרשות זו בשנה שנבחרה.";
     else if (state.auth != null)
-      sentence = "בשנת " + state.year + " שיעור בגרות טק ברשות " + unitName() + " הוא " + pctText(ru) + ", לעומת " + pctText(rc) + " בממוצע האשכול ו-" + pctText(rn) + " בממוצע הארצי.";
+      sentence = "בשנת " + state.year + " שיעור בגרות טק ברשות " + unitLabel() + " הוא " + pctText(ru) + ", לעומת " + pctText(rc) + " בממוצע האשכול ו-" + pctText(rn) + " בממוצע הארצי.";
     else sentence = "בשנת " + state.year + " שיעור בגרות טק באשכול הוא " + pctText(rc) + ", לעומת " + pctText(rn) + " בממוצע הארצי.";
     $("kpiSub").textContent = sentence;
   }
@@ -459,6 +487,7 @@ if (typeof module !== "undefined") module.exports = CORE;
     $("posSub").textContent = state.auth == null
       ? "כל עמודה היא רשות. הקו הכתום הוא ממוצע האשכול והקו האפור הוא הממוצע הארצי."
       : "המקום של " + unitName() + " הוא " + rank + " מתוך " + rows.length + " רשויות. הקו הכתום הוא ממוצע האשכול והקו האפור הוא הממוצע הארצי.";
+    if (focus.on) $("posSub").textContent += " המדרג כולל תמיד את כל בתי הספר של כל רשות, גם אם הסתרתם בתי ספר.";
     var items = [];
     if (state.auth != null) items.push({ label: unitName(), color: C.auth, box: true });
     items.push({ label: "רשויות האשכול", color: C.other, box: true });
@@ -610,6 +639,7 @@ if (typeof module !== "undefined") module.exports = CORE;
       if (!(r[2] in ids)) { ids[r[2]] = { sid: r[2], auth: r[1], type: r[4], ses: r[5] }; order.push(ids[r[2]]); }
     });
     order.forEach(function (s) {
+      s.on = !state.excluded.has(s.sid);
       s.a = CORE.cluster(D, { year: state.year, auth: null, sid: s.sid, regularOnly: state.regular });
     });
     order.sort(function (x, y) { return x.auth - y.auth || (y.a.students_12 || 0) - (x.a.students_12 || 0); });
@@ -619,9 +649,11 @@ if (typeof module !== "undefined") module.exports = CORE;
     var r = CORE.rate(count, st);
     return r == null ? NA : pct(r) + ' <span class="c">(' + num(count) + ")</span>";
   }
-  function renderSchools() {
-    var rows = schoolRows();
-    $("schoolsSub").textContent = "כל בית ספר בנפרד. ליד כל אחוז מופיע בסוגריים מספר התלמידים. בבתי ספר קטנים (פחות מ-20 לומדים בכיתה י\"ב) אחוזים משתנים מאוד משנה לשנה.";
+  function renderSchools(rows) {
+    var pick = state.auth != null;
+    $("schoolsSub").textContent = "כל בית ספר בנפרד. ליד כל אחוז מופיע בסוגריים מספר התלמידים. בבתי ספר קטנים (פחות מ-20 לומדים בכיתה י\"ב) אחוזים משתנים מאוד משנה לשנה." +
+      (pick ? " כדי להתמקד בבתי ספר מסוימים, בטלו את הסימון ליד בתי הספר שאינכם רוצים לכלול בגרפים של הרשות (הממוצעים של האשכול והארץ לא משתנים)." : "");
+    $("pickTools").hidden = !pick || !rows.length;
     if (!rows.length) { $("tblSchools").innerHTML = '<tr><td class="empty">אין בתי ספר להצגה בשנה זו.</td></tr>'; return; }
     var html = "<thead><tr><th>בית ספר</th><th>לומדים בי\"ב</th><th>בגרות טק</th><th>\"כמעט\" טק (מספר)</th>" +
       '<th class="x">סוג</th><th class="x">עשירון טיפוח</th><th class="x">מתמטיקה 5</th><th class="x">פיזיקה 5</th>' +
@@ -633,8 +665,10 @@ if (typeof module !== "undefined") module.exports = CORE;
       }
       var a = s.a, info = D.schools[s.sid] || ["", ""];
       var small = a.students_12 != null && a.students_12 < 20;
-      html += "<tr><td class=\"name\">" + esc(info[0]) + "<small>" + esc(info[1]) + "</small>" +
-        (small ? '<span class="small-n">מספרים קטנים – יש להיזהר בפרשנות</span>' : "") + "</td>" +
+      var box = pick ? '<input type="checkbox" class="pick" data-sid="' + s.sid + '"' + (s.on ? " checked" : "") +
+        ' aria-label="כלול בגרפים: ' + esc(info[0]) + '"> ' : "";
+      html += '<tr class="' + (s.on ? "" : "off") + '"><td class="name"><div class="nm">' + box + "<span>" + esc(info[0]) + "<small>" + esc(info[1]) + "</small>" +
+        (small ? '<span class="small-n">מספרים קטנים – יש להיזהר בפרשנות</span>' : "") + "</span></div></td>" +
         "<td>" + num(a.students_12) + "</td><td>" + cell(a.tech, a.students_12) + "</td><td>" + num(a.almost_tech) + "</td>" +
         '<td class="x">' + esc(D.types[s.type]) + '</td><td class="x">' + (s.ses == null ? NA : s.ses) + "</td>" +
         '<td class="x">' + cell(a.math5, a.students_12) + '</td><td class="x">' + cell(a.physics5, a.students_12) + "</td>" +
@@ -675,16 +709,54 @@ if (typeof module !== "undefined") module.exports = CORE;
   }
 
   // ---------- wiring ----------
+  function renderBanner() {
+    var bar = $("focusBar");
+    bar.hidden = !focus.on;
+    if (!focus.on) return;
+    bar.className = "focus" + (focus.shown === 0 ? " warn" : "");
+    bar.innerHTML = (focus.shown === 0
+      ? "<b>לא נבחר אף בית ספר</b>, ולכן אין נתונים להצגה לרשות."
+      : "מוצגים <b>" + focus.shown + " מתוך " + focus.total + "</b> בתי הספר של " + esc(unitName()) + ". הממוצעים של האשכול והארץ והמדרג בין הרשויות כוללים את כל בתי הספר.") +
+      ' <button type="button" class="btn" id="btnReset">החזירו את כל בתי הספר</button>';
+  }
   function renderAll() {
     $("regularHint").hidden = !state.regular;
-    renderKpis(); renderPosition(); renderTrend(); renderFunnel(); renderSubjects(); renderSchools(); renderGender();
+    var rows = schoolRows();
+    focus.total = rows.length;
+    focus.shown = rows.filter(function (s) { return s.on; }).length;
+    focus.on = state.auth != null && focus.shown < focus.total;
+    renderBanner();
+    renderKpis(); renderPosition(); renderTrend(); renderFunnel(); renderSubjects(); renderSchools(rows); renderGender();
     document.title = "בגרות טק – " + unitName();
   }
   function slugIndex(slug) {
     for (var i = 0; i < D.authorities.length; i++) if (D.authorities[i].slug === slug) return i;
     return null;
   }
-  function readHash() { state.auth = slugIndex(decodeURIComponent(location.hash.replace(/^#/, ""))); $("selAuth").value = state.auth == null ? "" : D.authorities[state.auth].slug; }
+
+  // The selection lives in the link (#slug?x=id,id) so it can be shared, and in this browser.
+  function storageKey() { return "bt_excluded_" + D.authorities[state.auth].slug; }
+  function parseIds(text) {
+    return new Set((text || "").split(",").map(function (t) { return parseInt(t, 10); }).filter(function (n) { return n > 0; }));
+  }
+  function saveSelection() {
+    if (state.auth == null) return;
+    var ids = Array.from(state.excluded);
+    try { localStorage.setItem(storageKey(), ids.join(",")); } catch (e) { /* storage may be blocked */ }
+    history.replaceState(null, "", location.pathname + location.search + "#" + D.authorities[state.auth].slug +
+      (ids.length ? "?x=" + ids.join(",") : ""));
+  }
+  function readHash() {
+    var raw = decodeURIComponent(location.hash.replace(/^#/, "")).split("?");
+    state.auth = slugIndex(raw[0]);
+    $("selAuth").value = state.auth == null ? "" : D.authorities[state.auth].slug;
+    state.excluded = new Set();
+    if (state.auth == null) return;
+    var m = /(?:^|&)x=([0-9,]*)/.exec(raw[1] || "");
+    if (m) { state.excluded = parseIds(m[1]); return; }
+    try { state.excluded = parseIds(localStorage.getItem(storageKey())); } catch (e) { /* ignore */ }
+  }
+  function onSelectionChange() { saveSelection(); renderAll(); }
 
   function init() {
     $("selAuth").innerHTML = '<option value="">כל האשכול – סקירה כללית</option>' +
@@ -701,6 +773,21 @@ if (typeof module !== "undefined") module.exports = CORE;
       var t = $("tblSchools"), on = t.classList.toggle("more");
       $("btnMore").setAttribute("aria-expanded", on);
       $("btnMore").textContent = on ? "הסתר עמודות נוספות" : "הצג עוד עמודות (מקצועות, סוג בית ספר, עשירון טיפוח)";
+    });
+    $("tblSchools").addEventListener("change", function (ev) {
+      var t = ev.target;
+      if (!t.classList || !t.classList.contains("pick")) return;
+      var sid = parseInt(t.getAttribute("data-sid"), 10);
+      if (t.checked) state.excluded.delete(sid); else state.excluded.add(sid);
+      onSelectionChange();
+    });
+    $("btnAll").addEventListener("click", function () { state.excluded = new Set(); onSelectionChange(); });
+    $("btnNone").addEventListener("click", function () {
+      schoolRows().forEach(function (s) { state.excluded.add(s.sid); });
+      onSelectionChange();
+    });
+    $("focusBar").addEventListener("click", function (ev) {
+      if (ev.target.id === "btnReset") { state.excluded = new Set(); onSelectionChange(); }
     });
     // charts drawn while a section was closed need a resize when it opens
     document.querySelectorAll("details").forEach(function (d) {
